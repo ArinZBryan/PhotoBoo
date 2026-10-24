@@ -6,8 +6,10 @@ import cv2
 import OpenGL.GL as gl
 from slimgui import imgui
 from slimgui import implot
+from pathlib import Path
 
 from PhotoBoo import imgui_window as imgui_windows
+from PhotoBoo import faceswap as fs
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +17,9 @@ class WebcamFeed:
     """Captures webcam frames with OpenCV and uploads them to an OpenGL texture."""
 
     def __init__(self, device=0):
+        target_dir = Path("targets")
+        paths = sorted(p for p in target_dir.glob("*") if p.suffix.lower() in {".jpg", ".jpeg", ".png"})
+        self.swapper = fs.FaceSwapper(paths, swap_len=2, gap=[1, 5], fade=0.2)
         self.capture = cv2.VideoCapture(device)
         if not self.capture.isOpened():
             logger.error("Could not open webcam %s", device)
@@ -28,7 +33,8 @@ class WebcamFeed:
         """Grab the latest frame into the texture. Returns True if a frame is available."""
         ok, frame = self.capture.read()
         if ok:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)#
+            frame = self.swapper.process(frame)
             height, width = frame.shape[:2]
             gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture)
             gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 1)
