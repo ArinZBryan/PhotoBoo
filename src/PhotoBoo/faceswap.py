@@ -33,11 +33,11 @@ def ensure_model(path: Path = MODEL_PATH) -> Path:
     return path
 
 
-def make_landmarker(mode: vision.RunningMode) -> vision.FaceLandmarker:
+def make_landmarker(mode: vision.RunningMode, num_faces: int = 1) -> vision.FaceLandmarker:
     options = vision.FaceLandmarkerOptions(
         base_options=BaseOptions(model_asset_path=str(ensure_model())),
         running_mode=mode,
-        num_faces=1,
+        num_faces=num_faces,
     )
     return vision.FaceLandmarker.create_from_options(options)
 
@@ -52,6 +52,12 @@ def result_to_points(result, shape) -> np.ndarray | None:
         return None
     h, w = shape[:2]
     return np.array([(p.x * w, p.y * h) for p in result.face_landmarks[0]], np.float32)
+
+
+def result_to_all_points(result, shape) -> list[np.ndarray]:
+    """Landmarks for every detected face, in pixel coords."""
+    h, w = shape[:2]
+    return [np.array([(p.x * w, p.y * h) for p in face], np.float32) for face in result.face_landmarks]
 
 
 # --------------------------------------------------------------------------- targets
@@ -129,15 +135,16 @@ class FaceSwapper:
     """
 
     def __init__(self, target_paths, swap_len: float = 3.0, fade: float = 0.4,
-                 gap: tuple[float, float] = (5.0, 15.0)):
+                 gap: tuple[float, float] = (5.0, 15.0), max_faces: int = 5):
         with make_landmarker(vision.RunningMode.IMAGE) as lm:
             self.targets = [load_target(p, lm) for p in target_paths]
         if not self.targets:
             raise ValueError("No target images given")
 
-        self.live = make_landmarker(vision.RunningMode.VIDEO)
+        self.live = make_landmarker(vision.RunningMode.VIDEO, num_faces=max_faces)
         self.__swap_len, self.__fade, self.__gap = swap_len, fade, gap
         self._last_ts = -1
+        self._victim_center: np.ndarray | None = None  # face being swapped, tracked by position
         self._schedule(time.monotonic())
 
     @property
@@ -167,6 +174,7 @@ class FaceSwapper:
     def _schedule(self, now: float) -> None:
         self.swap_start = now + random.uniform(*self.__gap)
         self.current = random.choice(self.targets)
+        self._victim_center = None  # pick a new random person next swap
 
     def trigger(self, target_name: str | None = None) -> None:
         """Start a swap immediately, optionally with a specific target (by file stem)."""
@@ -176,11 +184,25 @@ class FaceSwapper:
                 raise KeyError(target_name)
             self.current = matches[0]
         self.swap_start = time.monotonic()
+        self._victim_center = None
 
-    def _detect(self, frame: np.ndarray) -> np.ndarray | None:
+    def _detect(self, frame: np.ndarray) -> list[np.ndarray]:
         ts = max(int(time.monotonic() * 1000), self._last_ts + 1)  # VIDEO mode needs increasing timestamps
         self._last_ts = ts
-        return result_to_points(self.live.detect_for_video(to_mp_image(frame), ts), frame.shape)
+        return result_to_all_points(self.live.detect_for_video(to_mp_image(frame), ts), frame.shape)
+
+    def _pick_face(self, faces: list[np.ndarray]) -> np.ndarray:
+        """Random face at swap start; afterwards the face nearest the previous one.
+
+        MediaPipe doesn't keep face order stable between frames, so we track
+        the chosen person by the position of their face centre.
+        """
+        if self._victim_center is None:
+            pts = random.choice(faces)
+        else:
+            pts = min(faces, key=lambda f: float(np.linalg.norm(f.mean(axis=0) - self._victim_center)))
+        self._victim_center = pts.mean(axis=0)
+        return pts
 
     @property
     def swapping(self) -> bool:
@@ -195,9 +217,10 @@ class FaceSwapper:
         if t < 0:
             return frame
 
-        pts = self._detect(frame)
-        if pts is None:
+        faces = self._detect(frame)
+        if not faces:
             return frame
+        pts = self._pick_face(faces)
 
         alpha = min(1.0, t / self.__fade, (self.__swap_len - t) / self.__fade)
         swapped = swap_face(frame, self.current, pts)
