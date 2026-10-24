@@ -2,20 +2,9 @@
 name = "PhotoBoo"
 version = "0.0.1"
 dependencies = [
-    "tensorboard",
-    "configargparse",
-    "tqdm",
-    "numpy",
-    "matplotlib",
-    "torch",
-    "torchvision",
-    "torchsummary",
-    "scikit-learn",
-    "opencv-python",
-    "loguru",
-    "scipy",
-    "imageio",
-    "slimgui"
+    "glfw>=2.11.0",
+    "pyopengl>=3.1.10",
+    "slimgui",
 ]
 requires-python = ">=3.8"
 authors = [
