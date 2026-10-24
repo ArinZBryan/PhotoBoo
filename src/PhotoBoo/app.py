@@ -50,12 +50,89 @@ class WebcamFeed:
         self.swapper.close()
         gl.glDeleteTextures([self.texture])
 
+class Border:
+    """Draws a tiled picture-frame border from the tl/tm/tr/ml/mr/bl/bm/br images in a directory."""
+
+    NAMES = ("tl", "tm", "tr", "ml", "mr", "bl", "bm", "br")
+
+    def __init__(self, directory="border"):
+        self.textures = {}
+        self.sizes = {}
+        for name in self.NAMES:
+            path = Path(directory) / f"{name}.png"
+            image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+            if image is None:
+                logger.error("Could not load border image %s", path)
+                continue
+            if image.ndim == 2:
+                image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGBA)
+            elif image.shape[2] == 3:
+                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGBA)
+            else:
+                image = cv2.cvtColor(image, cv2.COLOR_BGRA2RGBA)
+            height, width = image.shape[:2]
+            texture = gl.glGenTextures(1)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, texture)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+            # Edge pieces are tiled by sampling past 1.0 in UV space
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_REPEAT)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_REPEAT)
+            gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 1)
+            gl.glTexImage2D(
+                gl.GL_TEXTURE_2D, 0, gl.GL_RGBA, width, height, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, image
+            )
+            self.textures[name] = texture
+            self.sizes[name] = (width, height)
+
+    def draw(self, draw_list, pos, size, scale):
+        """Draw the border just inside the rectangle at pos with the given size."""
+        if len(self.textures) < len(self.NAMES):
+            return
+        x0, y0 = pos
+        x1, y1 = x0 + size[0], y0 + size[1]
+
+        def dims(name):
+            return self.sizes[name][0] * scale, self.sizes[name][1] * scale
+
+        tl_w, tl_h = dims("tl")
+        tr_w, tr_h = dims("tr")
+        bl_w, bl_h = dims("bl")
+        br_w, br_h = dims("br")
+
+        # Edges first so the corners are drawn over any overlap
+        top_len = (x1 - tr_w) - (x0 + tl_w)
+        if top_len > 0:
+            w, h = dims("tm")
+            draw_list.add_image(self.textures["tm"], (x0 + tl_w, y0), (x1 - tr_w, y0 + h), (0, 0), (top_len / w, 1))
+        bottom_len = (x1 - br_w) - (x0 + bl_w)
+        if bottom_len > 0:
+            w, h = dims("bm")
+            draw_list.add_image(self.textures["bm"], (x0 + bl_w, y1 - h), (x1 - br_w, y1), (0, 0), (bottom_len / w, 1))
+        left_len = (y1 - bl_h) - (y0 + tl_h)
+        if left_len > 0:
+            w, h = dims("ml")
+            draw_list.add_image(self.textures["ml"], (x0, y0 + tl_h), (x0 + w, y1 - bl_h), (0, 0), (1, left_len / h))
+        right_len = (y1 - br_h) - (y0 + tr_h)
+        if right_len > 0:
+            w, h = dims("mr")
+            draw_list.add_image(self.textures["mr"], (x1 - w, y0 + tr_h), (x1, y1 - br_h), (0, 0), (1, right_len / h))
+
+        draw_list.add_image(self.textures["tl"], (x0, y0), (x0 + tl_w, y0 + tl_h))
+        draw_list.add_image(self.textures["tr"], (x1 - tr_w, y0), (x1, y0 + tr_h))
+        draw_list.add_image(self.textures["bl"], (x0, y1 - bl_h), (x0 + bl_w, y1))
+        draw_list.add_image(self.textures["br"], (x1 - br_w, y1 - br_h), (x1, y1))
+
+    def close(self):
+        gl.glDeleteTextures(list(self.textures.values()))
+
 @dataclass
 class State:
     force_faceswap = False
     faceswap_gap = (1.0, 4.0)
     faceswap_time = 1.0
     faceswap_fade = 1.0
+    border_scale = 1.0
     
 
 def parse_args(argv=None):
@@ -78,6 +155,7 @@ def run(argv=None):
     )
     window.set_font_size(24)
     webcam = WebcamFeed(args.camera)
+    border = Border()
 
     show_settings = False
 
@@ -106,11 +184,13 @@ def run(argv=None):
                 imgui.image(int(webcam.texture), imgui.get_content_region_avail())
             else:
                 imgui.text("No webcam feed")
+            border.draw(imgui.get_window_draw_list(), viewport.pos, viewport.size, state.border_scale)
         imgui.end()
 
         if show_settings:
             expanded, show_settings = imgui.begin("Settings", closable=True)
             if expanded:
+                _, state.border_scale = imgui.slider_float("Border scale", state.border_scale, 0.1, 10.0)
                 faceswap_now = imgui.button("Force Swap")
                 faceswap_gap, state.faceswap_gap = imgui.input_float2("Time between swaps (seconds)", state.faceswap_gap)
                 faceswap_fade, state.faceswap_fade = imgui.input_float("Faceswap fade time (seconds)", state.faceswap_fade)
@@ -134,6 +214,7 @@ def run(argv=None):
 
 
         window.end_frame()
+    border.close()
     webcam.close()
     window.close()
 
