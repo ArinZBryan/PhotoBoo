@@ -20,6 +20,7 @@ class GlfwWindow:  # pylint: disable=too-many-public-methods
         self._deferred_show = True
         self._drag_and_drop_paths = None
         self._core_profile = False
+        self._windowed_geometry = None
 
         # Create window.
         glfw.init()
@@ -112,6 +113,41 @@ class GlfwWindow:  # pylint: disable=too-many-public-methods
 
     def maximize(self):
         glfw.maximize_window(self._window)
+
+    @property
+    def is_fullscreen(self):
+        # pyGLFW returns a (falsy) null pointer, not None, for windowed windows
+        return bool(glfw.get_window_monitor(self._window))
+
+    def _current_monitor(self):
+        """GLFW has no direct query, so pick the monitor overlapping the window the most."""
+        win_x, win_y = glfw.get_window_pos(self._window)
+        win_w, win_h = glfw.get_window_size(self._window)
+        best, best_overlap = glfw.get_primary_monitor(), 0
+        for monitor in glfw.get_monitors():
+            mon_x, mon_y = glfw.get_monitor_pos(monitor)
+            mode = glfw.get_video_mode(monitor)
+            overlap_w = min(win_x + win_w, mon_x + mode.size.width) - max(win_x, mon_x)
+            overlap_h = min(win_y + win_h, mon_y + mode.size.height) - max(win_y, mon_y)
+            overlap = max(0, overlap_w) * max(0, overlap_h)
+            if overlap > best_overlap:
+                best, best_overlap = monitor, overlap
+        return best
+
+    def toggle_fullscreen(self):
+        if self.is_fullscreen:
+            x, y, width, height = self._windowed_geometry
+            glfw.set_window_monitor(self._window, None, x, y, width, height, glfw.DONT_CARE)
+        else:
+            x, y = glfw.get_window_pos(self._window)
+            width, height = glfw.get_window_size(self._window)
+            self._windowed_geometry = (x, y, width, height)
+            monitor = self._current_monitor()
+            mode = glfw.get_video_mode(monitor)
+            # Using the monitor's current video mode gives a borderless fullscreen window
+            glfw.set_window_monitor(
+                self._window, monitor, 0, 0, mode.size.width, mode.size.height, mode.refresh_rate
+            )
 
     def set_position(self, x, y):
         glfw.set_window_pos(self._window, x, y + self.title_bar_height)
@@ -223,6 +259,8 @@ class ImguiWindow(GlfwWindow):
     def _glfw_key_callback(self, _window, key, _scan, action, _mods):
         if action == glfw.PRESS and key == glfw.KEY_ESCAPE:
             self._esc_pressed = True
+        if action == glfw.PRESS and key == glfw.KEY_F11:
+            self.toggle_fullscreen()
 
     def should_close(self) -> bool:
         return bool(glfw.window_should_close(self._window) or (self._close_on_esc and self._esc_pressed))

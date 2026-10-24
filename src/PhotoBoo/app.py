@@ -49,7 +49,17 @@ class WebcamFeed:
         self.swapper.close()
         gl.glDeleteTextures([self.texture])
 
+@dataclass
+class State:
+    force_faceswap = False
+    faceswap_gap = (1.0, 4.0)
+    faceswap_time = 1.0
+    faceswap_fade = 1.0
+    
+
 def run():
+    state = State()
+
     window = imgui_windows.ImguiWindow(
         title="PhotoBoo",
         close_on_esc=False,
@@ -59,15 +69,60 @@ def run():
     window.set_font_size(24)
     webcam = WebcamFeed()
 
+    show_settings = False
+
     while not window.should_close():
         window.begin_frame()
 
-        if webcam.update():
-            # Stretch the feed to fill the whole window, ignoring aspect ratio
-            imgui.image(int(webcam.texture), imgui.get_content_region_avail())
-        else:
-            imgui.text("No webcam feed")
-            
+        if imgui.is_key_pressed(imgui.Key.KEY_F1, repeat=False):
+            show_settings = not show_settings
+
+        # The main "Debug" window covers the whole viewport
+        viewport = imgui.get_main_viewport()
+        imgui.set_next_window_pos(viewport.pos, imgui.Cond.ALWAYS)
+        imgui.set_next_window_size(viewport.size, imgui.Cond.ALWAYS)
+        imgui.push_style_var(imgui.StyleVar.WINDOW_PADDING, (0, 0))
+        visible, _ = imgui.begin(
+            "Debug",
+            flags=imgui.WindowFlags.NO_DECORATION
+            | imgui.WindowFlags.NO_MOVE
+            | imgui.WindowFlags.NO_SAVED_SETTINGS
+            | imgui.WindowFlags.NO_BRING_TO_FRONT_ON_FOCUS,
+        )
+        imgui.pop_style_var()
+        if visible:
+            if webcam.update():
+                # Stretch the feed to fill the whole window, ignoring aspect ratio
+                imgui.image(int(webcam.texture), imgui.get_content_region_avail())
+            else:
+                imgui.text("No webcam feed")
+        imgui.end()
+
+        if show_settings:
+            expanded, show_settings = imgui.begin("Settings", closable=True)
+            if expanded:
+                faceswap_now = imgui.button("Force Swap")
+                faceswap_gap, state.faceswap_gap = imgui.input_float2("Time between swaps (seconds)", state.faceswap_gap)
+                faceswap_fade, state.faceswap_fade = imgui.input_float("Faceswap fade time (seconds)", state.faceswap_fade)
+                faceswap_len, state.faceswap_time = imgui.input_float("Faceswap time (seconds)", state.faceswap_time)
+            imgui.end()
+
+        """options:
+        time during swap (swap_len) float
+        fade time of swap (fade) float
+        gap between swaps (gap) (tuple[float, float])
+        """
+
+
+        if state.force_faceswap:
+            webcam.swapper.trigger()
+        if state.faceswap_fade < 0.00001:
+            state.faceswap_fade = 0.00001
+        webcam.swapper.fade = state.faceswap_fade
+        webcam.swapper.swap_len = state.faceswap_time
+        webcam.swapper.gap = state.faceswap_gap
+
+
         window.end_frame()
     webcam.close()
     window.close()
