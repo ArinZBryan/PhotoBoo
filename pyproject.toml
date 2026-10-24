@@ -1,0 +1,16 @@
+[project]
+name = "PhotoBoo"
+version = "0.0.1"
+dependencies = [
+
+]
+requires=python = ">= 3.8"
+authors = [
+    {name = "Arin Bryan", email = "arinbryan27@gmail.com"},
+    {name = "Luke Plastow},
+    {name = "Onkar Garg}
+]
+description = "The haunted-house mirror from hell"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
