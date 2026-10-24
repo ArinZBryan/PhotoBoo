@@ -252,6 +252,7 @@ def run(argv=None):
     show_settings = False
     last_frame_time = time.monotonic()  # DIAGNOSTIC
 
+
     while not window.should_close():
         window.begin_frame()
         _now = time.monotonic()  # DIAGNOSTIC
