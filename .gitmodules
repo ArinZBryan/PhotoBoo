@@ -1,3 +1,0 @@
-[submodule "vendor/NeuralPoissonSolver"]
-	path = vendor/NeuralPoissonSolver
-	url = https://github.com/ep1phany05/NeuralPoissonSolver.git

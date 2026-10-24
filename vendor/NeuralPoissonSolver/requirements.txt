@@ -1,0 +1,13 @@
+tensorboard
+configargparse
+opencv-python
+tqdm
+numpy
+matplotlib
+torch
+torchvision
+torchsummary
+scikit-learn
+loguru
+scipy
+imageio
