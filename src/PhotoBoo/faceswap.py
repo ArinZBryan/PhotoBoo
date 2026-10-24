@@ -145,6 +145,8 @@ class FaceSwapper:
         self.__swap_len, self.__fade, self.__gap = swap_len, fade, gap
         self._last_ts = -1
         self._victim_center: np.ndarray | None = None  # face being swapped, tracked by position
+        self._snapshot: tuple[np.ndarray, str] | None = None
+        self._snapped = False
         self._schedule(time.monotonic())
 
     @property
@@ -175,6 +177,12 @@ class FaceSwapper:
         self.swap_start = now + random.uniform(*self.__gap)
         self.current = random.choice(self.targets)
         self._victim_center = None  # pick a new random person next swap
+        self._snapped = False
+
+    def pop_snapshot(self) -> tuple[np.ndarray, str] | None:
+        """Return (frame, target_name) once per swap, taken at full strength; else None."""
+        snap, self._snapshot = self._snapshot, None
+        return snap
 
     def trigger(self, target_name: str | None = None) -> None:
         """Start a swap immediately, optionally with a specific target (by file stem)."""
@@ -185,6 +193,7 @@ class FaceSwapper:
             self.current = matches[0]
         self.swap_start = time.monotonic()
         self._victim_center = None
+        self._snapped = False
 
     def _detect(self, frame: np.ndarray) -> list[np.ndarray]:
         ts = max(int(time.monotonic() * 1000), self._last_ts + 1)  # VIDEO mode needs increasing timestamps
@@ -224,7 +233,13 @@ class FaceSwapper:
 
         alpha = min(1.0, t / self.__fade, (self.__swap_len - t) / self.__fade)
         swapped = swap_face(frame, self.current, pts)
-        return cv2.addWeighted(swapped, alpha, frame, 1.0 - alpha, 0)
+        out = cv2.addWeighted(swapped, alpha, frame, 1.0 - alpha, 0)
+
+        # One snapshot per swap, at the midpoint when the swap is fully faded in.
+        if not self._snapped and t >= self.__swap_len / 2:
+            self._snapshot = (out.copy(), self.current.name)
+            self._snapped = True
+        return out
 
     def close(self) -> None:
         self.live.close()

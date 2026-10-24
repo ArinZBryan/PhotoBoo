@@ -1,7 +1,9 @@
 import argparse
 import logging
 import os
+import threading
 from dataclasses import dataclass
+from datetime import datetime
 
 import cv2
 import OpenGL.GL as gl
@@ -13,6 +15,23 @@ from PhotoBoo import imgui_window as imgui_windows
 from PhotoBoo import faceswap as fs
 
 logger = logging.getLogger(__name__)
+
+CAPTURE_DIR = Path("captures")
+
+
+def save_capture(frame_bgr, label: str = "manual") -> None:
+    """Write a BGR frame to captures/ as a timestamped JPEG, off the render thread."""
+    CAPTURE_DIR.mkdir(exist_ok=True)
+    path = CAPTURE_DIR / f"{datetime.now():%Y%m%d_%H%M%S_%f}_{label}.jpg"
+
+    def _write():
+        if cv2.imwrite(str(path), frame_bgr):
+            logger.info("Saved %s", path)
+        else:
+            logger.error("Failed to save %s", path)
+
+    threading.Thread(target=_write, daemon=True).start()
+
 
 class WebcamFeed:
     """Captures webcam frames with OpenCV and uploads them to an OpenGL texture."""
@@ -26,6 +45,8 @@ class WebcamFeed:
             logger.error("Could not open webcam %s", device)
         self.texture = gl.glGenTextures(1)
         self.size = (0, 0)
+        self.last_frame = None   # last displayed frame (BGR), for manual screenshots
+        self.auto_save = True    # save one shot per swap
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
@@ -34,8 +55,15 @@ class WebcamFeed:
         """Grab the latest frame into the texture. Returns True if a frame is available."""
         ok, frame = self.capture.read()
         if ok:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)#
+            # Swap on the BGR frame: the swapper's targets and MediaPipe input are BGR-based.
             frame = self.swapper.process(frame)
+            self.last_frame = frame
+
+            snap = self.swapper.pop_snapshot()
+            if snap is not None and self.auto_save:
+                save_capture(*snap)
+
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             height, width = frame.shape[:2]
             gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture)
             gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 1)
@@ -131,7 +159,7 @@ class State:
     force_faceswap = False
     faceswap_gap = (1.0, 4.0)
     faceswap_time = 1.0
-    faceswap_fade = 1.0
+    faceswap_fade = 0.3
     border_scale = 1.0
     
 
@@ -164,6 +192,8 @@ def run(argv=None):
 
         if imgui.is_key_pressed(imgui.Key.KEY_F1, repeat=False):
             show_settings = not show_settings
+        if imgui.is_key_pressed(imgui.Key.KEY_F2, repeat=False) and webcam.last_frame is not None:
+            save_capture(webcam.last_frame.copy())
 
         # The main "Debug" window covers the whole viewport
         viewport = imgui.get_main_viewport()
