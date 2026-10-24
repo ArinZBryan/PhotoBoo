@@ -46,7 +46,7 @@ class WebcamFeed:
         self.texture = gl.glGenTextures(1)
         self.size = (0, 0)
         self.last_frame = None   # last displayed frame (BGR), for manual screenshots
-        self.auto_save = True    # save one shot per swap
+        self.auto_save = False    # save one shot per swap
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
@@ -224,7 +224,9 @@ def run(argv=None):
             if expanded:
                 _, state.border_scale = imgui.slider_float("Border scale", state.border_scale, 0.1, 10.0)
                 state.force_faceswap = imgui.button("Force Swap")
+                _, webcam.auto_save = imgui.checkbox("Save photos", webcam.auto_save)
                 _, state.blink_mode = imgui.checkbox("Swap on blink (replaces timer)", state.blink_mode)
+
                 if state.blink_mode:
                     _, state.blink_threshold = imgui.slider_float(
                         "Blink threshold", state.blink_threshold, 0.1, 0.9, "%.2f"
