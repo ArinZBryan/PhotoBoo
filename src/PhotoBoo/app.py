@@ -46,6 +46,7 @@ class WebcamFeed:
 
     def close(self):
         self.capture.release()
+        self.swapper.close()
         gl.glDeleteTextures([self.texture])
 
 def run():
