@@ -161,6 +161,8 @@ class State:
     faceswap_time = 1.0
     faceswap_fade = 0.3
     border_scale = 1.0
+    blink_mode = False        # swap when someone blinks instead of on a timer
+    blink_threshold = 0.5
     
 
 def parse_args(argv=None):
@@ -221,7 +223,12 @@ def run(argv=None):
             expanded, show_settings = imgui.begin("Settings", closable=True)
             if expanded:
                 _, state.border_scale = imgui.slider_float("Border scale", state.border_scale, 0.1, 10.0)
-                faceswap_now = imgui.button("Force Swap")
+                state.force_faceswap = imgui.button("Force Swap")
+                _, state.blink_mode = imgui.checkbox("Swap on blink (replaces timer)", state.blink_mode)
+                if state.blink_mode:
+                    _, state.blink_threshold = imgui.slider_float(
+                        "Blink threshold", state.blink_threshold, 0.1, 0.9, "%.2f"
+                    )
                 faceswap_gap, state.faceswap_gap = imgui.input_float2("Time between swaps (seconds)", state.faceswap_gap)
                 faceswap_fade, state.faceswap_fade = imgui.input_float("Faceswap fade time (seconds)", state.faceswap_fade)
                 faceswap_len, state.faceswap_time = imgui.input_float("Faceswap time (seconds)", state.faceswap_time)
@@ -241,6 +248,8 @@ def run(argv=None):
         webcam.swapper.fade = state.faceswap_fade
         webcam.swapper.swap_len = state.faceswap_time
         webcam.swapper.gap = state.faceswap_gap
+        webcam.swapper.blink_mode = state.blink_mode
+        webcam.swapper.blink_threshold = state.blink_threshold
 
 
         window.end_frame()

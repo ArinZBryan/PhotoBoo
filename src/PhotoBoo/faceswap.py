@@ -33,11 +33,13 @@ def ensure_model(path: Path = MODEL_PATH) -> Path:
     return path
 
 
-def make_landmarker(mode: vision.RunningMode, num_faces: int = 1) -> vision.FaceLandmarker:
+def make_landmarker(mode: vision.RunningMode, num_faces: int = 1,
+                    blendshapes: bool = False) -> vision.FaceLandmarker:
     options = vision.FaceLandmarkerOptions(
         base_options=BaseOptions(model_asset_path=str(ensure_model())),
         running_mode=mode,
         num_faces=num_faces,
+        output_face_blendshapes=blendshapes,
     )
     return vision.FaceLandmarker.create_from_options(options)
 
@@ -58,6 +60,15 @@ def result_to_all_points(result, shape) -> list[np.ndarray]:
     """Landmarks for every detected face, in pixel coords."""
     h, w = shape[:2]
     return [np.array([(p.x * w, p.y * h) for p in face], np.float32) for face in result.face_landmarks]
+
+
+def result_to_blinks(result) -> list[float]:
+    """Per face, how closed the eyes are (0 open .. 1 closed): the less-closed eye of the two."""
+    blinks = []
+    for shapes in result.face_blendshapes or []:
+        scores = {c.category_name: c.score for c in shapes}
+        blinks.append(min(scores.get("eyeBlinkLeft", 0.0), scores.get("eyeBlinkRight", 0.0)))
+    return blinks
 
 
 # --------------------------------------------------------------------------- targets
@@ -141,13 +152,33 @@ class FaceSwapper:
         if not self.targets:
             raise ValueError("No target images given")
 
-        self.live = make_landmarker(vision.RunningMode.VIDEO, num_faces=max_faces)
+        self.live = make_landmarker(vision.RunningMode.VIDEO, num_faces=max_faces, blendshapes=True)
         self.__swap_len, self.__fade, self.__gap = swap_len, fade, gap
         self._last_ts = -1
         self._victim_center: np.ndarray | None = None  # face being swapped, tracked by position
         self._snapshot: tuple[np.ndarray, str] | None = None
         self._snapped = False
+
+        # Blink mode: swap whenever someone blinks, instead of on a timer (off by default).
+        self._blink_mode = False
+        self.blink_threshold = 0.5   # eyeBlink blendshape score counted as "eyes closed"
+        self.blink_cooldown = 0.5    # seconds after a swap ends before a blink can trigger another
+        self._eyes_were_closed = False
+        self._blink_ready_at = 0.0
+
         self._schedule(time.monotonic())
+
+    @property
+    def blink_mode(self) -> bool:
+        return self._blink_mode
+
+    @blink_mode.setter
+    def blink_mode(self, enabled: bool) -> None:
+        if enabled == self._blink_mode:
+            return  # safe to assign every frame from the UI
+        self._blink_mode = enabled
+        if not self.swapping:  # a swap on screen finishes; otherwise switch schedule now
+            self._schedule(time.monotonic())
 
     @property
     def swap_len(self):
@@ -174,7 +205,11 @@ class FaceSwapper:
         self.__gap = g
 
     def _schedule(self, now: float) -> None:
-        self.swap_start = now + random.uniform(*self.__gap)
+        if self._blink_mode:
+            self.swap_start = float("inf")  # wait for a blink
+            self._blink_ready_at = now + self.blink_cooldown
+        else:
+            self.swap_start = now + random.uniform(*self.__gap)
         self.current = random.choice(self.targets)
         self._victim_center = None  # pick a new random person next swap
         self._snapped = False
@@ -195,10 +230,21 @@ class FaceSwapper:
         self._victim_center = None
         self._snapped = False
 
-    def _detect(self, frame: np.ndarray) -> list[np.ndarray]:
+    def _detect(self, frame: np.ndarray) -> tuple[list[np.ndarray], list[float]]:
+        """Landmarks and blink scores for every face in the frame."""
         ts = max(int(time.monotonic() * 1000), self._last_ts + 1)  # VIDEO mode needs increasing timestamps
         self._last_ts = ts
-        return result_to_all_points(self.live.detect_for_video(to_mp_image(frame), ts), frame.shape)
+        result = self.live.detect_for_video(to_mp_image(frame), ts)
+        return result_to_all_points(result, frame.shape), result_to_blinks(result)
+
+    def _check_blink(self, faces: list[np.ndarray], blinks: list[float], now: float) -> None:
+        """Start a swap on the person who just blinked (eyes going open -> closed)."""
+        closed = [f for f, b in zip(faces, blinks) if b >= self.blink_threshold]
+        just_closed = bool(closed) and not self._eyes_were_closed
+        self._eyes_were_closed = bool(closed)
+        if just_closed and now >= self._blink_ready_at:
+            self.trigger()
+            self._victim_center = random.choice(closed).mean(axis=0)  # swap the blinker
 
     def _pick_face(self, faces: list[np.ndarray]) -> np.ndarray:
         """Random face at swap start; afterwards the face nearest the previous one.
@@ -222,11 +268,20 @@ class FaceSwapper:
         t = now - self.swap_start
         if t > self.__swap_len:
             self._schedule(now)
-            return frame
-        if t < 0:
+            t = now - self.swap_start
+        in_swap = 0.0 <= t <= self.__swap_len
+
+        # Timer mode only needs detection during a swap; blink mode watches every frame.
+        if not in_swap and not self._blink_mode:
             return frame
 
-        faces = self._detect(frame)
+        faces, blinks = self._detect(frame)
+        if not in_swap:
+            self._check_blink(faces, blinks, now)
+            t = now - self.swap_start
+            if not 0.0 <= t <= self.__swap_len:
+                return frame
+
         if not faces:
             return frame
         pts = self._pick_face(faces)
