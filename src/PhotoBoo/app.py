@@ -1,3 +1,4 @@
+import argparse
 import logging
 import os
 from dataclasses import dataclass
@@ -57,7 +58,16 @@ class State:
     faceswap_fade = 1.0
     
 
-def run():
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(prog="photoboo", description="The haunted-house mirror from hell")
+    parser.add_argument(
+        "-c", "--camera", type=int, default=0, metavar="INDEX",
+        help="index of the camera device to use (default: 0)",
+    )
+    return parser.parse_args(argv)
+
+def run(argv=None):
+    args = parse_args(argv)
     state = State()
 
     window = imgui_windows.ImguiWindow(
@@ -67,7 +77,7 @@ def run():
         request_opengl_core_profile=True,
     )
     window.set_font_size(24)
-    webcam = WebcamFeed()
+    webcam = WebcamFeed(args.camera)
 
     show_settings = False
 
