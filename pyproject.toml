@@ -14,12 +14,13 @@ dependencies = [
     "opencv-python",
     "loguru",
     "scipy",
-    "imageio"
+    "imageio",
+    "slimgui"
 ]
-requires=python = ">= 3.8"
+requires-python = ">=3.8"
 authors = [
     {name = "Arin Bryan", email = "arinbryan27@gmail.com"},
-    {name = "Luke Plastow},
+    {name = "Luke Plastow"},
     {name = "Onkar Garg", email = "onkargarg6@gmail.com"}
 ]
 description = "The haunted-house mirror from hell"
