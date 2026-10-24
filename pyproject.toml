@@ -28,6 +28,7 @@ license-files = ["LICENSE"]
 
 [project.scripts]
 photoboo = "PhotoBoo.app:run"
+photoboo-web = "PhotoBoo.web:run"
 
 [build-system]
 requires = ["uv_build>=0.9,<0.13"]
