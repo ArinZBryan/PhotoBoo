@@ -146,9 +146,9 @@ class BorderPiece:
         gl.glDeleteTextures(self.textures)
 
 class Border:
-    """Draws a tiled picture-frame border from the tl/tm/tr/ml/mr/bl/bm/br images (PNG or GIF) in a directory."""
+    """Draws tiled left and right borders from the ml/mr images (PNG or GIF) in a directory."""
 
-    NAMES = ("tl", "tm", "tr", "ml", "mr", "bl", "bm", "br")
+    NAMES = ("ml", "mr")
     EXTENSIONS = (".gif", ".png")
 
     def __init__(self, directory="border"):
@@ -183,33 +183,13 @@ class Border:
         def dims(name):
             return self.pieces[name].size[0] * scale, self.pieces[name].size[1] * scale
 
-        tl_w, tl_h = dims("tl")
-        tr_w, tr_h = dims("tr")
-        bl_w, bl_h = dims("bl")
-        br_w, br_h = dims("br")
-
-        # Edges first so the corners are drawn over any overlap
-        top_len = (x1 - tr_w) - (x0 + tl_w)
-        if top_len > 0:
-            w, h = dims("tm")
-            draw_list.add_image(texture["tm"], (x0 + tl_w, y0), (x1 - tr_w, y0 + h), (0, 0), (top_len / w, 1))
-        bottom_len = (x1 - br_w) - (x0 + bl_w)
-        if bottom_len > 0:
-            w, h = dims("bm")
-            draw_list.add_image(texture["bm"], (x0 + bl_w, y1 - h), (x1 - br_w, y1), (0, 0), (bottom_len / w, 1))
-        left_len = (y1 - bl_h) - (y0 + tl_h)
-        if left_len > 0:
+        # Each tile keeps the image's aspect ratio and repeats down the edge.
+        length = y1 - y0
+        if length > 0:
             w, h = dims("ml")
-            draw_list.add_image(texture["ml"], (x0, y0 + tl_h), (x0 + w, y1 - bl_h), (0, 0), (1, left_len / h))
-        right_len = (y1 - br_h) - (y0 + tr_h)
-        if right_len > 0:
+            draw_list.add_image(texture["ml"], (x0, y0), (x0 + w, y1), (0, 0), (1, length / h))
             w, h = dims("mr")
-            draw_list.add_image(texture["mr"], (x1 - w, y0 + tr_h), (x1, y1 - br_h), (0, 0), (1, right_len / h))
-
-        draw_list.add_image(texture["tl"], (x0, y0), (x0 + tl_w, y0 + tl_h))
-        draw_list.add_image(texture["tr"], (x1 - tr_w, y0), (x1, y0 + tr_h))
-        draw_list.add_image(texture["bl"], (x0, y1 - bl_h), (x0 + bl_w, y1))
-        draw_list.add_image(texture["br"], (x1 - br_w, y1 - br_h), (x1, y1))
+            draw_list.add_image(texture["mr"], (x1 - w, y0), (x1, y1), (0, 0), (1, length / h))
 
     def close(self):
         for piece in self.pieces.values():
@@ -221,7 +201,8 @@ class State:
     faceswap_gap = (1.0, 4.0)
     faceswap_time = 1.0
     faceswap_fade = 0.3
-    border_scale = 1.0
+    border_scale = 0.3
+    show_border = True
     blink_mode = False        # swap when someone blinks instead of on a timer
     blink_threshold = 0.5
     
@@ -284,12 +265,14 @@ def run(argv=None):
                 imgui.image(int(webcam.texture), imgui.get_content_region_avail())
             else:
                 imgui.text("No webcam feed")
-            border.draw(imgui.get_window_draw_list(), viewport.pos, viewport.size, state.border_scale)
+            if state.show_border:
+                border.draw(imgui.get_window_draw_list(), viewport.pos, viewport.size, state.border_scale)
         imgui.end()
 
         if show_settings:
             expanded, show_settings = imgui.begin("Settings", closable=True)
             if expanded:
+                _, state.show_border = imgui.checkbox("Show border", state.show_border)
                 _, state.border_scale = imgui.slider_float("Border scale", state.border_scale, 0.1, 10.0)
                 state.force_faceswap = imgui.button("Force Swap")
                 _, webcam.auto_save = imgui.checkbox("Save photos", webcam.auto_save)
