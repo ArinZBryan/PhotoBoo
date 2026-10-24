@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from slimgui import imgui
 from slimgui import implot
 
-import imgui_window as imgui_windows
+from PhotoBoo import imgui_window as imgui_windows
 
 logger = logging.getLogger(__name__)
 
