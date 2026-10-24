@@ -140,6 +140,30 @@ class FaceSwapper:
         self._last_ts = -1
         self._schedule(time.monotonic())
 
+    @property
+    def swap_len(self):
+        return self.swap_len
+
+    @swap_len.setter
+    def swap_len(self, sl):
+        self.swap_len = sl
+
+    @property
+    def fade(self):
+        return self.fade
+
+    @fade.setter
+    def fade(self, f):
+        self.fade = f
+
+    @property
+    def gap(self):
+        return self.gap
+
+    @gap.setter
+    def gap(self, g):
+        self.gap = g
+
     def _schedule(self, now: float) -> None:
         self.swap_start = now + random.uniform(*self.gap)
         self.current = random.choice(self.targets)
