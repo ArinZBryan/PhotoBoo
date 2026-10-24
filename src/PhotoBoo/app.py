@@ -1,12 +1,16 @@
 import argparse
+import bisect
 import logging
 import os
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime
 
 import cv2
+import numpy as np
 import OpenGL.GL as gl
+from PIL import Image, ImageSequence
 from slimgui import imgui
 from slimgui import implot
 from pathlib import Path
@@ -51,18 +55,38 @@ class WebcamFeed:
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
 
-    def update(self):
-        """Grab the latest frame into the texture. Returns True if a frame is available."""
-        ok, frame = self.capture.read()
-        if ok:
+        self._lock = threading.Lock()
+        self._latest = None  # newest processed BGR frame not yet uploaded
+        self._running = True
+        self._thread = threading.Thread(target=self._worker, daemon=True)
+        self._thread.start()
+
+    def _worker(self):
+        """Read and face-swap frames off the render thread so slow swaps don't stall the UI."""
+        while self._running:
+            ok, frame = self.capture.read()
+            if not ok:
+                time.sleep(0.01)
+                continue
             # Swap on the BGR frame: the swapper's targets and MediaPipe input are BGR-based.
+            _t = time.monotonic()  # DIAGNOSTIC
             frame = self.swapper.process(frame)
-            self.last_frame = frame
+            if time.monotonic() - _t > 0.1:
+                logger.warning("DIAG slow swapper.process: %.0f ms", (time.monotonic() - _t) * 1e3)
 
             snap = self.swapper.pop_snapshot()
             if snap is not None and self.auto_save:
                 save_capture(*snap)
 
+            with self._lock:
+                self._latest = frame
+
+    def update(self):
+        """Upload the newest processed frame into the texture. Returns True if a frame is available."""
+        with self._lock:
+            frame, self._latest = self._latest, None
+        if frame is not None:
+            self.last_frame = frame
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             height, width = frame.shape[:2]
             gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture)
@@ -74,54 +98,90 @@ class WebcamFeed:
         return self.size[0] > 0
 
     def close(self):
+        self._running = False
+        self._thread.join(timeout=2)
         self.capture.release()
         self.swapper.close()
         gl.glDeleteTextures([self.texture])
 
+class BorderPiece:
+    """One border image: a single texture for a still image, or one per frame for an animated GIF."""
+
+    MIN_FRAME_SECONDS = 0.02  # GIFs with a 0 delay are conventionally played at ~10-20ms
+
+    def __init__(self, path):
+        self.textures = []
+        self.frame_ends = []  # cumulative end time of each frame, in seconds
+        with Image.open(path) as image:
+            self.size = image.size
+            for frame in ImageSequence.Iterator(image):
+                duration = frame.info.get("duration", 0) / 1000
+                rgba = np.ascontiguousarray(frame.convert("RGBA"))
+                self.textures.append(self._upload(rgba))
+                previous_end = self.frame_ends[-1] if self.frame_ends else 0.0
+                self.frame_ends.append(previous_end + max(duration, self.MIN_FRAME_SECONDS))
+
+    @staticmethod
+    def _upload(rgba):
+        height, width = rgba.shape[:2]
+        texture = gl.glGenTextures(1)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, texture)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+        # Edge pieces are tiled by sampling past 1.0 in UV space
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_REPEAT)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_REPEAT)
+        gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 1)
+        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA, width, height, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, rgba)
+        return texture
+
+    def texture_at(self, seconds):
+        """The texture to show `seconds` into playback. Animations loop forever."""
+        if len(self.textures) == 1:
+            return self.textures[0]
+        position = seconds % self.frame_ends[-1]
+        return self.textures[bisect.bisect_right(self.frame_ends, position)]
+
+    def close(self):
+        gl.glDeleteTextures(self.textures)
+
 class Border:
-    """Draws a tiled picture-frame border from the tl/tm/tr/ml/mr/bl/bm/br images in a directory."""
+    """Draws a tiled picture-frame border from the tl/tm/tr/ml/mr/bl/bm/br images (PNG or GIF) in a directory."""
 
     NAMES = ("tl", "tm", "tr", "ml", "mr", "bl", "bm", "br")
+    EXTENSIONS = (".gif", ".png")
 
     def __init__(self, directory="border"):
-        self.textures = {}
-        self.sizes = {}
+        self.pieces = {}
+        self.start = time.monotonic()
+        self._watch, self._watch_warned = {}, {}  # DIAGNOSTIC
         for name in self.NAMES:
-            path = Path(directory) / f"{name}.png"
-            image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
-            if image is None:
-                logger.error("Could not load border image %s", path)
+            path = next((Path(directory) / f"{name}{ext}" for ext in self.EXTENSIONS
+                         if (Path(directory) / f"{name}{ext}").exists()), None)
+            if path is None:
+                logger.error("No border image for %s in %s", name, directory)
                 continue
-            if image.ndim == 2:
-                image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGBA)
-            elif image.shape[2] == 3:
-                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGBA)
-            else:
-                image = cv2.cvtColor(image, cv2.COLOR_BGRA2RGBA)
-            height, width = image.shape[:2]
-            texture = gl.glGenTextures(1)
-            gl.glBindTexture(gl.GL_TEXTURE_2D, texture)
-            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
-            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
-            # Edge pieces are tiled by sampling past 1.0 in UV space
-            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_REPEAT)
-            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_REPEAT)
-            gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 1)
-            gl.glTexImage2D(
-                gl.GL_TEXTURE_2D, 0, gl.GL_RGBA, width, height, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, image
-            )
-            self.textures[name] = texture
-            self.sizes[name] = (width, height)
+            self.pieces[name] = BorderPiece(path)
 
     def draw(self, draw_list, pos, size, scale):
         """Draw the border just inside the rectangle at pos with the given size."""
-        if len(self.textures) < len(self.NAMES):
+        if len(self.pieces) < len(self.NAMES):
             return
+        now = time.monotonic() - self.start
+        texture = {name: piece.texture_at(now) for name, piece in self.pieces.items()}
+        # DIAGNOSTIC: report an animated piece whose frame hasn't changed for a while
+        for name, piece in self.pieces.items():
+            last_tex, since = self._watch.get(name, (None, now))
+            if texture[name] != last_tex:
+                self._watch[name] = (texture[name], now)
+            elif len(piece.textures) > 1 and now - since > 0.5 and now - self._watch_warned.get(name, -9) > 2:
+                self._watch_warned[name] = now
+                logger.warning("DIAG border %s stuck on texture %s for %.1fs", name, texture[name], now - since)
         x0, y0 = pos
         x1, y1 = x0 + size[0], y0 + size[1]
 
         def dims(name):
-            return self.sizes[name][0] * scale, self.sizes[name][1] * scale
+            return self.pieces[name].size[0] * scale, self.pieces[name].size[1] * scale
 
         tl_w, tl_h = dims("tl")
         tr_w, tr_h = dims("tr")
@@ -132,27 +192,28 @@ class Border:
         top_len = (x1 - tr_w) - (x0 + tl_w)
         if top_len > 0:
             w, h = dims("tm")
-            draw_list.add_image(self.textures["tm"], (x0 + tl_w, y0), (x1 - tr_w, y0 + h), (0, 0), (top_len / w, 1))
+            draw_list.add_image(texture["tm"], (x0 + tl_w, y0), (x1 - tr_w, y0 + h), (0, 0), (top_len / w, 1))
         bottom_len = (x1 - br_w) - (x0 + bl_w)
         if bottom_len > 0:
             w, h = dims("bm")
-            draw_list.add_image(self.textures["bm"], (x0 + bl_w, y1 - h), (x1 - br_w, y1), (0, 0), (bottom_len / w, 1))
+            draw_list.add_image(texture["bm"], (x0 + bl_w, y1 - h), (x1 - br_w, y1), (0, 0), (bottom_len / w, 1))
         left_len = (y1 - bl_h) - (y0 + tl_h)
         if left_len > 0:
             w, h = dims("ml")
-            draw_list.add_image(self.textures["ml"], (x0, y0 + tl_h), (x0 + w, y1 - bl_h), (0, 0), (1, left_len / h))
+            draw_list.add_image(texture["ml"], (x0, y0 + tl_h), (x0 + w, y1 - bl_h), (0, 0), (1, left_len / h))
         right_len = (y1 - br_h) - (y0 + tr_h)
         if right_len > 0:
             w, h = dims("mr")
-            draw_list.add_image(self.textures["mr"], (x1 - w, y0 + tr_h), (x1, y1 - br_h), (0, 0), (1, right_len / h))
+            draw_list.add_image(texture["mr"], (x1 - w, y0 + tr_h), (x1, y1 - br_h), (0, 0), (1, right_len / h))
 
-        draw_list.add_image(self.textures["tl"], (x0, y0), (x0 + tl_w, y0 + tl_h))
-        draw_list.add_image(self.textures["tr"], (x1 - tr_w, y0), (x1, y0 + tr_h))
-        draw_list.add_image(self.textures["bl"], (x0, y1 - bl_h), (x0 + bl_w, y1))
-        draw_list.add_image(self.textures["br"], (x1 - br_w, y1 - br_h), (x1, y1))
+        draw_list.add_image(texture["tl"], (x0, y0), (x0 + tl_w, y0 + tl_h))
+        draw_list.add_image(texture["tr"], (x1 - tr_w, y0), (x1, y0 + tr_h))
+        draw_list.add_image(texture["bl"], (x0, y1 - bl_h), (x0 + bl_w, y1))
+        draw_list.add_image(texture["br"], (x1 - br_w, y1 - br_h), (x1, y1))
 
     def close(self):
-        gl.glDeleteTextures(list(self.textures.values()))
+        for piece in self.pieces.values():
+            piece.close()
 
 @dataclass
 class State:
@@ -184,13 +245,19 @@ def run(argv=None):
         request_opengl_core_profile=True,
     )
     window.set_font_size(24)
+    window.set_vsync(True)  # the webcam no longer paces the loop, so cap it to the display
     webcam = WebcamFeed(args.camera)
     border = Border()
 
     show_settings = False
+    last_frame_time = time.monotonic()  # DIAGNOSTIC
 
     while not window.should_close():
         window.begin_frame()
+        _now = time.monotonic()  # DIAGNOSTIC
+        if _now - last_frame_time > 0.06:
+            logger.warning("DIAG slow render frame: %.0f ms (swapping=%s)", (_now - last_frame_time) * 1e3, webcam.swapper.swapping)
+        last_frame_time = _now
 
         if imgui.is_key_pressed(imgui.Key.KEY_F1, repeat=False):
             show_settings = not show_settings
