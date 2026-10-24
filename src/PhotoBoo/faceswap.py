@@ -136,36 +136,36 @@ class FaceSwapper:
             raise ValueError("No target images given")
 
         self.live = make_landmarker(vision.RunningMode.VIDEO)
-        self.swap_len, self.fade, self.gap = swap_len, fade, gap
+        self.__swap_len, self.__fade, self.__gap = swap_len, fade, gap
         self._last_ts = -1
         self._schedule(time.monotonic())
 
     @property
     def swap_len(self):
-        return self.swap_len
+        return self.__swap_len
 
     @swap_len.setter
     def swap_len(self, sl):
-        self.swap_len = sl
+        self.__swap_len = sl
 
     @property
     def fade(self):
-        return self.fade
+        return self.__fade
 
     @fade.setter
     def fade(self, f):
-        self.fade = f
+        self.__fade = f
 
     @property
     def gap(self):
-        return self.gap
+        return self.__gap
 
     @gap.setter
     def gap(self, g):
-        self.gap = g
+        self.__gap = g
 
     def _schedule(self, now: float) -> None:
-        self.swap_start = now + random.uniform(*self.gap)
+        self.swap_start = now + random.uniform(*self.__gap)
         self.current = random.choice(self.targets)
 
     def trigger(self, target_name: str | None = None) -> None:
@@ -184,12 +184,12 @@ class FaceSwapper:
 
     @property
     def swapping(self) -> bool:
-        return 0.0 <= time.monotonic() - self.swap_start <= self.swap_len
+        return 0.0 <= time.monotonic() - self.swap_start <= self.__swap_len
 
     def process(self, frame: np.ndarray) -> np.ndarray:
         now = time.monotonic()
         t = now - self.swap_start
-        if t > self.swap_len:
+        if t > self.__swap_len:
             self._schedule(now)
             return frame
         if t < 0:
@@ -199,7 +199,7 @@ class FaceSwapper:
         if pts is None:
             return frame
 
-        alpha = min(1.0, t / self.fade, (self.swap_len - t) / self.fade)
+        alpha = min(1.0, t / self.__fade, (self.__swap_len - t) / self.__fade)
         swapped = swap_face(frame, self.current, pts)
         return cv2.addWeighted(swapped, alpha, frame, 1.0 - alpha, 0)
 
