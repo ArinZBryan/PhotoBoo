@@ -2,13 +2,26 @@
 name = "PhotoBoo"
 version = "0.0.1"
 dependencies = [
-
+    "tensorboard",
+    "configargparse",
+    "tqdm",
+    "numpy",
+    "matplotlib",
+    "torch",
+    "torchvision",
+    "torchsummary",
+    "scikit-learn",
+    "opencv-python",
+    "loguru",
+    "scipy",
+    "jupyter",
+    "imageio"
 ]
 requires=python = ">= 3.8"
 authors = [
     {name = "Arin Bryan", email = "arinbryan27@gmail.com"},
     {name = "Luke Plastow},
-    {name = "Onkar Garg}
+    {name = "Onkar Garg", email = "onkargarg6@gmail.com"}
 ]
 description = "The haunted-house mirror from hell"
 readme = "README.md"
